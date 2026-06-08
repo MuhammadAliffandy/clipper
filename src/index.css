@@ -7,7 +7,7 @@
 
 :root {
   /* Vibrant Gradients */
-  --bg-gradient: linear-gradient(135deg, #0f172a, #312e81, #701a75);
+  --bg-gradient: #0a0a0a;
   
   /* Glass Cards */
   --glass-bg: rgba(255, 255, 255, 0.05);
@@ -15,9 +15,9 @@
   --glass-highlight: rgba(255, 255, 255, 0.2);
   
   /* Accents */
-  --accent: #06b6d4; /* Cyan */
-  --accent-glow: rgba(6, 182, 212, 0.5);
-  --accent-secondary: #ec4899; /* Pink */
+  --accent: #ffffff; /* White */
+  --accent-glow: rgba(255, 255, 255, 0.3);
+  --accent-secondary: #a0a0a0; /* Grey */
   
   /* Text */
   --text-primary: #ffffff;
@@ -43,16 +43,8 @@ html, body, #root {
   height: 100%;
   font-family: 'Outfit', system-ui, sans-serif;
   background: var(--bg-gradient);
-  background-size: 400% 400%;
-  animation: gradientBG 15s ease infinite;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
-}
-
-@keyframes gradientBG {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -62,15 +54,15 @@ input { font-family: inherit; }
 /* ── Layout ── */
 .app-layout {
   display: grid;
-  grid-template-columns: 80px 1fr 350px;
-  grid-template-rows: 70px 1fr;
+  grid-template-columns: 80px 1fr;
+  grid-template-rows: 60px 55vh auto;
   grid-template-areas:
-    "sidebar header  header"
-    "sidebar main    panel";
+    "sidebar header"
+    "sidebar main"
+    "sidebar panel";
   height: 100vh;
   overflow: hidden;
-  background: radial-gradient(circle at top left, rgba(255,255,255,0.05), transparent 40%),
-              radial-gradient(circle at bottom right, rgba(6, 182, 212, 0.1), transparent 40%);
+  background: #0a0a0a;
 }
 
 /* ── Header ── */
@@ -89,9 +81,7 @@ input { font-family: inherit; }
 .logo {
   font-size: 1.8rem;
   font-weight: 800;
-  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--text-primary);
   letter-spacing: -1px;
   animation: floatLogo 3s ease-in-out infinite;
 }
@@ -140,6 +130,9 @@ input { font-family: inherit; }
   background: var(--glass-bg);
   backdrop-filter: blur(20px);
   border-right: 1px solid var(--glass-border);
+  position: sticky;
+  top: 0;
+  height: 100vh;
 }
 
 .sidebar-icon {
@@ -161,8 +154,8 @@ input { font-family: inherit; }
 }
 
 .sidebar-icon.active {
-  color: white;
-  background: linear-gradient(135deg, var(--accent), #0284c7);
+  color: #000;
+  background: #fff;
   box-shadow: 0 4px 15px var(--accent-glow);
 }
 
@@ -180,10 +173,20 @@ input { font-family: inherit; }
   grid-area: panel;
   background: var(--glass-bg);
   backdrop-filter: blur(20px);
-  border-left: 1px solid var(--glass-border);
+  border-top: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
+  align-items: center;
+  overflow-x: hidden;
   overflow-y: auto;
+  min-width: 0;
+}
+.app-panel > * {
+  width: 100%;
+  max-width: 1000px;
+}
+.app-panel.panel-full-width > * {
+  max-width: 100%;
 }
 
 .panel-section {
@@ -235,15 +238,15 @@ input { font-family: inherit; }
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent), #3b82f6);
-  color: white;
+  background: #fff;
+  color: #000;
   box-shadow: 0 4px 15px var(--accent-glow);
 }
 
 .btn-primary:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 25px var(--accent-glow);
-  filter: brightness(1.1);
+  background: #f0f0f0;
 }
 
 .btn-primary:active { transform: translateY(0); }
@@ -291,11 +294,11 @@ input[type="text"]:focus, input[type="number"]:focus {
 .dropzone-icon {
   width: 80px; height: 80px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  background: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
+  color: #000;
   box-shadow: 0 10px 30px rgba(0,0,0,0.3);
   animation: floatIcon 4s ease-in-out infinite;
 }
@@ -343,7 +346,15 @@ input[type="text"]:focus, input[type="number"]:focus {
   border-radius: var(--radius-sm);
   border: 1px solid var(--glass-highlight);
   text-align: center;
-  text-shadow: 0 2px 10px rgba(0,0,0,0.8);
+  text-shadow: 0 0 20px #fff, 0 2px 4px rgba(0,0,0,0.9);
+}
+
+.hook-gradient-overlay {
+  position: absolute;
+  bottom: 0; left: 0; right: 0; height: 50%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* ── Timeline ── */
@@ -367,14 +378,14 @@ input[type="text"]:focus, input[type="number"]:focus {
 .timeline-progress {
   position: absolute;
   top: 0; left: 0; height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.4));
+  background: rgba(255, 255, 255, 0.1);
   border-right: 2px solid var(--accent);
 }
 
 .timeline-range {
   position: absolute;
   top: 0; height: 100%;
-  background: rgba(236, 72, 153, 0.2);
+  background: rgba(255, 255, 255, 0.2);
   border-left: 3px solid var(--accent-secondary);
   border-right: 3px solid var(--accent-secondary);
 }
@@ -388,14 +399,34 @@ input[type="range"].scrubber {
 
 /* ── Badges & Tags ── */
 .niche-badge {
-  background: linear-gradient(135deg, var(--accent-secondary), #8b5cf6);
+  background: #333;
   color: white;
   padding: 8px 16px;
   border-radius: var(--radius-xl);
   font-weight: 800;
   display: inline-block;
-  box-shadow: 0 4px 15px rgba(236, 72, 153, 0.4);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
 }
+
+.layout-full-panel {
+  grid-template-rows: 60px auto;
+  grid-template-areas:
+    "sidebar header"
+    "sidebar panel";
+}
+.layout-full-panel .app-main {
+  display: none !important;
+}
+
+.clips-grid {
+  display: flex;
+  overflow-x: auto;
+  gap: 16px;
+  padding-bottom: 16px; /* Space for scrollbar */
+}
+.clips-grid::-webkit-scrollbar { height: 8px; }
+.clips-grid::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); border-radius: 4px; }
+.clips-grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
 
 .niche-keyword {
   background: rgba(255,255,255,0.1);
@@ -427,6 +458,10 @@ input[type="range"].scrubber {
 }
 
 /* ── Utilities ── */
+.lucide-spinner {
+  animation: spin 1s linear infinite;
+}
+
 .btn-spinner {
   width: 18px; height: 18px;
   border: 3px solid rgba(255,255,255,0.3);

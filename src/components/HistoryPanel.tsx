@@ -107,7 +107,7 @@ export function HistoryPanel({ onLoadUpload }: HistoryPanelProps) {
   if (isLoading) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'rgba(255,255,255,0.5)' }}>
-        <Loader2 size={32} className="btn-spinner" style={{ marginBottom: 16 }} />
+        <Loader2 size={32} className="lucide-spinner" style={{ marginBottom: 16 }} />
         Loading history...
       </div>
     );

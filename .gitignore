@@ -27,3 +27,4 @@ dist-ssr
 .env
 server/uploads
 server/output
+server/youtube_tokens.json

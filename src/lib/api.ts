@@ -51,10 +51,19 @@ export async function uploadVideo(file: File, onProgress?: (pct: number) => void
     form.append('video', file);
     xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText).fileId);
-      else reject(new Error(`Upload failed: ${xhr.status}`));
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (data.fileId) resolve(data.fileId);
+          else reject(new Error('Upload failed: Server did not return a file ID'));
+        } catch (e) {
+          reject(new Error(`Upload failed: Invalid JSON response (${xhr.responseText.slice(0, 50)})`));
+        }
+      } else {
+        reject(new Error(`Upload failed (Status ${xhr.status}): ${xhr.responseText.slice(0, 50)}`));
+      }
     };
-    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.onerror = () => reject(new Error('Network error during upload (Backend might be offline)'));
     xhr.open('POST', '/api/upload');
     xhr.send(form);
   });
@@ -121,22 +130,22 @@ export function downloadYouTubeVideoWithProgress(
 }
 
 /** Transcribe audio using local Whisper */
-export async function transcribeVideo(fileId: string, language = 'en'): Promise<TranscriptResult> {
+export async function transcribeVideo(fileId: string, language = 'en', settings?: any): Promise<TranscriptResult> {
   const res = await fetch('/api/transcribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileId, language }),
+    body: JSON.stringify({ fileId, language, settings }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Transcription failed (${res.status})`);
   return res.json();
 }
 
 /** Detect niche from transcript text */
-export async function detectNiche(text: string): Promise<NicheResult> {
+export async function detectNiche(text: string, settings?: any): Promise<NicheResult> {
   const res = await fetch('/api/niche', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, settings }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Niche detection failed (${res.status})`);
   return res.json();
@@ -147,12 +156,13 @@ export async function getAiClipSuggestions(
   text: string,
   words: TranscriptWord[],
   niche: string,
-  duration: number
+  duration: number,
+  settings?: any
 ): Promise<AiClipSuggestion[]> {
   const res = await fetch('/api/ai-clips', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, words, niche, duration }),
+    body: JSON.stringify({ text, words, niche, duration, settings }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `AI clips failed (${res.status})`);
   const data = await res.json();
@@ -164,12 +174,13 @@ export async function chatWithAI(
   message: string,
   transcript: string,
   niche: string,
-  chatHistory: ChatMessage[]
+  chatHistory: ChatMessage[],
+  settings?: any
 ): Promise<string> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, transcript, niche, chatHistory }),
+    body: JSON.stringify({ message, transcript, niche, chatHistory, settings }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Chat failed (${res.status})`);
   return (await res.json()).reply;
@@ -200,6 +211,10 @@ export async function exportClip(params: {
   transforms?: VideoTransforms;
   addIntroHook?: boolean;
   introHookText?: string;
+  ttsEngine?: 'google' | 'elevenlabs';
+  elevenLabsApiKey?: string;
+  groqApiKey?: string;
+  openRouterApiKey?: string;
 }): Promise<ClipResult> {
   const res = await fetch('/api/clip', {
     method: 'POST',
@@ -223,6 +238,29 @@ export interface HistoryFile {
 export async function getUploadHistory(): Promise<HistoryFile[]> {
   const res = await fetch('/api/files/uploads');
   if (!res.ok) throw new Error('Failed to fetch upload history');
+  return res.json();
+}
+
+/** Mock YouTube Upload / Schedule */
+export async function uploadToYoutube(
+  title: string,
+  description: string,
+  tags: string[],
+  scheduledTime?: Date,
+  settings?: any
+): Promise<{ success: boolean, message: string }> {
+  const res = await fetch('/api/youtube-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      title, 
+      description, 
+      tags, 
+      scheduledTime: scheduledTime?.toISOString(),
+      settings 
+    }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `YouTube upload failed (${res.status})`);
   return res.json();
 }
 

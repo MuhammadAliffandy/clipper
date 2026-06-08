@@ -182,7 +182,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({ niche, onSendMessage }
             opacity: (!input.trim() || isLoading) ? 0.5 : 1
           }}
         >
-          {isLoading ? <Loader2 size={16} className="btn-spinner" /> : <Send size={16} />}
+          {isLoading ? <Loader2 size={16} className="lucide-spinner" /> : <Send size={16} />}
         </button>
       </div>
 

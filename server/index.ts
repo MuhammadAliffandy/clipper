@@ -9,10 +9,11 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import { v4 as uuidv4 } from 'uuid';
 import youtubedl from 'youtube-dl-exec';
+import * as googleTTS from 'google-tts-api';
 import { WaveFile } from 'wavefile';
+import { google } from 'googleapis';
 import { pipeline, env } from '@xenova/transformers';
 import { Agent as UndiciAgent } from 'undici';
-import * as googleTTS from 'google-tts-api';
 
 // Force HTTP/1.1 for Groq API calls.
 // Node 18+ uses undici (HTTP/2 capable) as its fetch backend.
@@ -31,19 +32,66 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Setup Ollama / OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || 'ollama',
-  baseURL: process.env.OLLAMA_BASE_URL || 'https://api.openai.com/v1',
-  timeout: 5 * 60 * 1000, // 5 minutes timeout for slow local models
-});
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gpt-4o-mini';
 
+// Helper to get LLM Client per request
+function getLlmClient(settings: any) {
+  if (settings?.llmSource === 'openrouter' && settings?.openRouterApiKey) {
+    return {
+      client: new OpenAI({
+        apiKey: settings.openRouterApiKey,
+        baseURL: 'https://openrouter.ai/api/v1',
+        defaultHeaders: { 'HTTP-Referer': 'http://localhost:5173', 'X-Title': 'Clipper' }
+      }),
+      model: 'meta-llama/llama-3.1-8b-instruct:free'
+    };
+  }
+  return {
+    client: new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY || 'ollama',
+      baseURL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
+      timeout: 5 * 60 * 1000,
+    }),
+    model: OLLAMA_MODEL
+  };
+}
+
 // Setup directories
-const UPLOAD_DIR = path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
-const OUTPUT_DIR = path.join(__dirname, process.env.OUTPUT_DIR || 'output');
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const OUTPUT_DIR = path.join(__dirname, 'output');
+const TRANSCRIPTS_DIR = path.join(__dirname, 'transcripts');
+const YOUTUBE_TOKENS_PATH = path.join(__dirname, 'youtube_tokens.json');
+
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+if (!fs.existsSync(TRANSCRIPTS_DIR)) fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
+
+function getYoutubeOauth2Client() {
+  return new google.auth.OAuth2(
+    process.env.YOUTUBE_CLIENT_ID,
+    process.env.YOUTUBE_CLIENT_SECRET,
+    'http://localhost:3001/api/youtube/oauth2callback'
+  );
+}
+
+function loadYoutubeTokens() {
+  try {
+    if (fs.existsSync(YOUTUBE_TOKENS_PATH)) {
+      return JSON.parse(fs.readFileSync(YOUTUBE_TOKENS_PATH, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Error reading youtube tokens:', err);
+  }
+  return null;
+}
+
+function saveYoutubeTokens(tokens: any) {
+  try {
+    fs.writeFileSync(YOUTUBE_TOKENS_PATH, JSON.stringify(tokens, null, 2));
+  } catch (err) {
+    console.error('Error saving youtube tokens:', err);
+  }
+}
 
 // Setup FFmpeg
 if (process.env.FFMPEG_PATH) {
@@ -74,7 +122,7 @@ const storage = multer.diskStorage({
     cb(null, `${uuidv4()}${ext}`);
   }
 });
-const upload = multer({ storage, limits: { fileSize: parseInt(process.env.MAX_UPLOAD_MB || '500') * 1024 * 1024 } });
+const upload = multer({ storage });
 
 // ── Helper: convert words to ASS subtitle format ─────────────────
 // ASS embeds the style inside the file, so the FFmpeg filter is just
@@ -322,13 +370,14 @@ app.get('/api/youtube-stream', async (req, res) => {
 
 // 3. Transcribe (Local or Cloud API)
 app.post('/api/transcribe', async (req, res) => {
-  const { fileId, language } = req.body;
+  const { fileId, language, settings } = req.body;
   if (!fileId) return res.status(400).json({ error: 'Missing fileId' });
   const filePath = path.join(UPLOAD_DIR, fileId);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
 
   try {
-    const useGroq = !!process.env.GROQ_API_KEY;
+    const groqKey = settings?.groqApiKey || process.env.GROQ_API_KEY;
+    const useGroq = !!groqKey;
     const useOpenAI = !!process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'sk-REPLACE_ME';
     const isCloud = useGroq || useOpenAI;
     const audioExt = isCloud ? 'mp3' : 'wav';
@@ -380,7 +429,7 @@ app.post('/api/transcribe', async (req, res) => {
       // ── Step 2: single request to Groq/OpenAI ─────────────────────────
       console.log(`[Transcription] Using ${useGroq ? 'Groq Whisper' : 'OpenAI Whisper'} (${(fs.statSync(sendPath).size / 1024 / 1024).toFixed(1)} MB)...`);
       const client = new OpenAI({
-        apiKey: useGroq ? process.env.GROQ_API_KEY : process.env.OPENAI_API_KEY,
+        apiKey: useGroq ? groqKey : process.env.OPENAI_API_KEY,
         baseURL: useGroq ? 'https://api.groq.com/openai/v1' : undefined,
         maxRetries: 3,
         timeout: 5 * 60 * 1000,
@@ -451,20 +500,22 @@ app.post('/api/transcribe', async (req, res) => {
   }
 });
 
-// 4. Niche Detection
+// 4. Detect Niche
 app.post('/api/niche', async (req, res) => {
-  const { text } = req.body;
-  if (!text) return res.status(400).json({ error: 'Missing text' });
+  const { text, settings } = req.body;
+  if (!text) return res.status(400).json({ error: 'Missing transcript text' });
+
   try {
-    const completion = await openai.chat.completions.create({
-      model: OLLAMA_MODEL,
+    const { client, model } = getLlmClient(settings);
+    const response = await client.chat.completions.create({
+      model: model,
       messages: [
         { role: 'system', content: 'You are an expert content strategist. Analyze the transcript and identify its primary niche/topic. Return ONLY valid JSON with no markdown, no explanation, no extra text.' },
         { role: 'user', content: `Transcript: ${text.slice(0, 3000)}\n\nReturn JSON: {"niche": "Short Niche Name", "confidence": 0.95, "keywords": ["kw1", "kw2"], "summary": "1 sentence summary"}` }
       ],
     });
 
-    const raw = (completion.choices[0].message.content || '').trim();
+    const raw = (response.choices[0].message.content || '').trim();
 
     // ── Robust JSON extraction ────────────────────────────────────────────
     // Small LLMs often add markdown fences, leading text, or trailing commas.
@@ -549,7 +600,7 @@ function generateFallbackClips(words: any[], text: string, totalDuration: number
 
 // 5. AI Auto-Clip Suggestions 🤖
 app.post('/api/ai-clips', async (req, res) => {
-  const { text, words, niche, duration } = req.body;
+  const { text, words, niche, duration, settings } = req.body;
   if (!text || !words) return res.status(400).json({ error: 'Missing transcript data' });
 
   const totalDuration = duration || (words.length ? words[words.length - 1]?.end : 120);
@@ -587,13 +638,16 @@ app.post('/api/ai-clips', async (req, res) => {
     }
 
     let allClips: any[] = [];
+    const { client, model } = getLlmClient(settings);
     
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       console.log(`[AI-Clips] Processing chunk ${i + 1}/${chunks.length} (${chunk.start.toFixed(0)}s - ${chunk.end.toFixed(0)}s)...`);
       
-      const prompt = `You are a viral TikTok editor. Find ALL highly engaging clips from this transcript chunk. Every clip MUST have an incredibly strong hook.
-Niche: ${niche || 'general'}
+      const prompt = `You are an elite, viral TikTok and Reels editor. Your ultimate goal is to find highly engaging, high-retention clips from this transcript chunk.
+Target Audience Niche: "${niche || 'general'}"
+CRITICAL INSTRUCTION: You MUST strictly analyze the text through the lens of the "${niche || 'general'}" niche. Only select clips that provide immense value, shock, or entertainment specifically for this audience!
+
 Chunk Duration: ${(chunk.end - chunk.start).toFixed(0)}s (From ${chunk.start.toFixed(0)}s to ${chunk.end.toFixed(0)}s in the main video)
 
 Transcript sample (with timestamps):
@@ -605,9 +659,10 @@ ${chunk.text.slice(0, 30000)}
 RULES:
 1. Output ONLY a valid JSON array. No markdown, no intro text.
 2. Clips MUST be strictly between 30 and 50 seconds long.
-3. The title MUST be extremely clickbaity (e.g. "The Secret to Wealth 🤯").
-4. The description MUST include viral hashtags (e.g. "Watch till the end! 🔥 #fyp #viral").
+3. The title MUST be extremely clickbaity and perfectly tailored to the "${niche || 'general'}" audience. Use emojis!
+4. The description MUST include viral hashtags relevant to "${niche || 'general'}".
 5. The timestamps (start and end) MUST fall between ${chunk.start.toFixed(0)} and ${chunk.end.toFixed(0)}.
+6. The \`reason\` field MUST explain why this clip will go viral in the "${niche || 'general'}" community.
 
 EXAMPLE OUTPUT:
 [
@@ -626,18 +681,25 @@ EXAMPLE OUTPUT:
 Now generate the JSON array for this chunk:`;
 
       try {
-        const completion = await openai.chat.completions.create({
-          model: OLLAMA_MODEL,
+        const stream = await client.chat.completions.create({
+          model: model,
           messages: [
             { role: 'system', content: 'You are a video clip editor. Respond with a JSON array only, no markdown, no explanation.' },
             { role: 'user', content: prompt }
           ],
           temperature: 0.5,
           max_tokens: 4096,
+          stream: true,
         });
 
-        const raw = (completion.choices[0].message.content || '').trim();
-        console.log(`[AI-Clips] Raw response for chunk ${i + 1}:`, raw.slice(0, 100) + '...');
+        process.stdout.write(`[AI-Clips] Generating chunk ${i + 1}: `);
+        let raw = '';
+        for await (const chunk of stream) {
+          const token = chunk.choices[0]?.delta?.content || '';
+          raw += token;
+          process.stdout.write(token);
+        }
+        console.log('\n[AI-Clips] Generation complete for chunk', i + 1);
 
         let chunkClips: any[] = [];
         const strategies = [
@@ -692,9 +754,9 @@ Now generate the JSON array for this chunk:`;
   }
 });
 
-// 6. AI Chat about the video 💬
+// 6. Chat with AI
 app.post('/api/chat', async (req, res) => {
-  const { message, transcript, niche, chatHistory } = req.body;
+  const { message, transcript, niche, chatHistory, settings } = req.body;
   if (!message) return res.status(400).json({ error: 'Missing message' });
 
   try {
@@ -712,7 +774,8 @@ Be concise and actionable. When suggesting clips, always include approximate tim
       { role: 'user', content: message }
     ];
 
-    const completion = await openai.chat.completions.create({ model: OLLAMA_MODEL, messages });
+    const { client, model } = getLlmClient(settings);
+    const completion = await client.chat.completions.create({ model: model, messages });
     const reply = completion.choices[0].message.content || '';
     res.json({ reply });
   } catch (error: any) {
@@ -753,7 +816,9 @@ app.post('/api/clip', async (req, res) => {
     fileId, start, end, aspectRatio, burnSubtitles, words,
     transforms = {},
     addIntroHook = false,
-    introHookText = ''
+    introHookText = '',
+    ttsEngine = 'google',
+    elevenLabsApiKey = ''
   } = req.body;
 
   if (!fileId || start === undefined || end === undefined) {
@@ -779,7 +844,10 @@ app.post('/api/clip', async (req, res) => {
   const outFilename = `clip-${uuidv4()}.mp4`;
   const outputPath = path.join(OUTPUT_DIR, outFilename);
   
-  if (!fs.existsSync(inputPath)) return res.status(404).json({ error: 'Input file not found' });
+  if (!fs.existsSync(inputPath)) {
+    console.error('[exportClip] Input file not found:', inputPath, 'fileId was:', fileId);
+    return res.status(404).json({ error: 'Input file not found' });
+  }
 
   // Variables for cleanup
   let srtPath: string | null = null;
@@ -906,8 +974,36 @@ app.post('/api/clip', async (req, res) => {
     if (addIntroHook && introHookText) {
       console.log('[Intro] Generating TTS...');
       ttsPath = path.join(OUTPUT_DIR, `tts-${uuidv4()}.mp3`);
-      const ttsBase64 = await googleTTS.getAudioBase64(introHookText.slice(0, 200), { lang: 'id', slow: false });
-      fs.writeFileSync(ttsPath, Buffer.from(ttsBase64, 'base64'));
+      
+      const apiKey = process.env.ELEVENLABS_API_KEY || elevenLabsApiKey;
+      if (ttsEngine === 'elevenlabs' && apiKey) {
+        console.log('[Intro] Using ElevenLabs API...');
+        try {
+          const elRes = await fetch('https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB', {
+            method: 'POST',
+            headers: {
+              'Accept': 'audio/mpeg',
+              'Content-Type': 'application/json',
+              'xi-api-key': apiKey
+            },
+            body: JSON.stringify({
+              text: introHookText.slice(0, 200),
+              model_id: 'eleven_multilingual_v2',
+              voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+            })
+          });
+          if (!elRes.ok) throw new Error('ElevenLabs API error: ' + elRes.statusText);
+          const buffer = await elRes.arrayBuffer();
+          fs.writeFileSync(ttsPath, Buffer.from(buffer));
+        } catch (elErr: any) {
+          console.error('[Intro] ElevenLabs failed, falling back to Google TTS:', elErr.message);
+          const ttsBase64 = await googleTTS.getAudioBase64(introHookText.slice(0, 200), { lang: 'en', slow: false });
+          fs.writeFileSync(ttsPath, Buffer.from(ttsBase64, 'base64'));
+        }
+      } else {
+        const ttsBase64 = await googleTTS.getAudioBase64(introHookText.slice(0, 200), { lang: 'en', slow: false });
+        fs.writeFileSync(ttsPath, Buffer.from(ttsBase64, 'base64'));
+      }
       
       const ttsDuration = await probeDuration(ttsPath);
       const introDuration = Math.ceil(ttsDuration) + 0.5; // add 0.5s padding
@@ -1031,6 +1127,12 @@ app.delete('/api/files/uploads/:filename', (req, res) => {
   }
 });
 
+// Global error handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Unhandled Express Error:', err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+});
+
 app.delete('/api/files/output/:filename', (req, res) => {
   const filepath = path.join(OUTPUT_DIR, req.params.filename);
   if (fs.existsSync(filepath)) {
@@ -1038,5 +1140,90 @@ app.delete('/api/files/output/:filename', (req, res) => {
     res.json({ success: true });
   } else {
     res.status(404).json({ error: 'File not found' });
+  }
+});
+
+// 7. Mock YouTube Upload / Schedule
+app.get('/api/youtube/auth-url', (req, res) => {
+  if (!process.env.YOUTUBE_CLIENT_ID || !process.env.YOUTUBE_CLIENT_SECRET) {
+    return res.status(400).json({ error: 'YOUTUBE_CLIENT_ID or YOUTUBE_CLIENT_SECRET is missing in .env' });
+  }
+  const oauth2Client = getYoutubeOauth2Client();
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline', // Requests refresh token
+    scope: ['https://www.googleapis.com/auth/youtube.upload']
+  });
+  res.json({ url });
+});
+
+app.get('/api/youtube/oauth2callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send('No code provided');
+  
+  try {
+    const oauth2Client = getYoutubeOauth2Client();
+    const { tokens } = await oauth2Client.getToken(code as string);
+    saveYoutubeTokens(tokens);
+    res.redirect('http://localhost:5173'); 
+  } catch (err: any) {
+    console.error('OAuth callback error:', err);
+    res.status(500).send('Authentication failed: ' + err.message);
+  }
+});
+
+app.post('/api/youtube-upload', async (req, res) => {
+  const { filename, title, description, tags, scheduledTime } = req.body;
+  if (!process.env.YOUTUBE_CLIENT_ID || !process.env.YOUTUBE_CLIENT_SECRET) {
+    return res.status(400).json({ error: 'YouTube Client ID/Secret missing in .env.' });
+  }
+
+  const tokens = loadYoutubeTokens();
+  if (!tokens) {
+    return res.status(401).json({ error: 'Not authenticated with YouTube.' });
+  }
+
+  const videoPath = path.join(OUTPUT_DIR, filename);
+  if (!fs.existsSync(videoPath)) {
+    return res.status(404).json({ error: 'Video file not found. Export may have failed.' });
+  }
+
+  try {
+    const oauth2Client = getYoutubeOauth2Client();
+    oauth2Client.setCredentials(tokens);
+
+    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+    const fileSize = fs.statSync(videoPath).size;
+
+    console.log(`[YouTube] Uploading ${filename}...`);
+    const uploadParams: any = {
+      part: ['snippet', 'status'],
+      requestBody: {
+        snippet: {
+          title,
+          description,
+          tags,
+          categoryId: '22' // People & Blogs
+        },
+        status: {
+          privacyStatus: 'private', // default to private for safety
+          selfDeclaredMadeForKids: false
+        }
+      },
+      media: {
+        body: fs.createReadStream(videoPath)
+      }
+    };
+
+    if (scheduledTime) {
+      uploadParams.requestBody.status.publishAt = scheduledTime;
+    }
+
+    const response = await youtube.videos.insert(uploadParams);
+    console.log(`[YouTube] Upload complete! Video ID: ${response.data.id}`);
+    
+    res.json({ success: true, message: scheduledTime ? 'Scheduled successfully' : 'Uploaded successfully', videoId: response.data.id });
+  } catch (err: any) {
+    console.error('[YouTube] Upload Error:', err.message);
+    res.status(500).json({ error: 'YouTube API Error: ' + err.message });
   }
 });

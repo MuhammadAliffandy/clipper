@@ -99,18 +99,6 @@ export const TransformsPanel: React.FC<TransformsPanelProps> = ({ transforms, on
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
-      <div style={{
-        padding: '12px 16px',
-        fontSize: '0.72rem',
-        fontWeight: 700,
-        letterSpacing: 2,
-        textTransform: 'uppercase',
-        color: 'rgba(255,255,255,0.3)',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-      }}>
-        🛡️ Anti-Detection Transforms
-      </div>
 
       <div style={{ padding: '0 16px' }}>
         {/* 1. Mirror */}

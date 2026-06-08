@@ -1,11 +1,12 @@
 /* eslint-disable react-hooks/refs */
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { VideoUploader } from './components/VideoUploader';
 import { ToastContainer } from './components/ToastContainer';
 import { AiClipsPanel } from './components/AiClipsPanel';
 import { AiChatPanel } from './components/AiChatPanel';
 import { TransformsPanel } from './components/TransformsPanel';
 import { HistoryPanel } from './components/HistoryPanel';
+import { SettingsPanel, type AppSettings } from './components/SettingsPanel';
 import { useToast } from './hooks/useToast';
 import { useVideoPlayer } from './hooks/useVideoPlayer';
 import {
@@ -16,7 +17,7 @@ import {
 } from './lib/api';
 import {
   Play, Pause, Download, Scissors,
-  Loader2, Sparkles, Layout, Video, MessageSquare, Settings, Wand2,
+  Loader2, Sparkles, Video, MessageSquare, Settings, Wand2,
   History, Plus
 } from 'lucide-react';
 
@@ -48,12 +49,24 @@ function App() {
   // Editor settings
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('9:16');
   const [burnSubtitles, setBurnSubtitles] = useState(true);
-  const [activeTab, setActiveTab] = useState<SidebarTab>('clips');
   const [transforms, setTransforms] = useState<VideoTransforms>({});
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const saved = localStorage.getItem('clipper_settings');
+    if (saved) return JSON.parse(saved);
+    return {
+      addIntroHook: true,
+      ttsEngine: 'elevenlabs',
+      llmSource: 'ollama',
+      groqApiKey: '',
+      elevenLabsApiKey: '',
+      openRouterApiKey: '',
+      youtubeApiKey: ''
+    };
+  });
+  const [activeTab, setActiveTab] = useState<SidebarTab>('clips');
+  const [isLoaded, setIsLoaded] = useState(false);
 
   const player = useVideoPlayer();
-  const bgVideoRef = useRef<HTMLVideoElement>(null);
-
   // ── Persistence ───────────────────────────────────────────────────────
   useEffect(() => {
     try {
@@ -68,6 +81,8 @@ function App() {
         if (data.aspectRatio) setAspectRatio(data.aspectRatio);
         if (data.burnSubtitles !== undefined) setBurnSubtitles(data.burnSubtitles);
         if (data.transforms) setTransforms(data.transforms);
+        if (data.settings) setSettings(prev => ({ ...prev, ...data.settings }));
+        if (data.activeTab && data.activeTab !== 'clips') setActiveTab(data.activeTab); // Don't persist clips tab to sidebar anymore
         if (data.videoUrl) {
           setVideoUrl(data.videoUrl);
         } else if (data.fileId) {
@@ -77,10 +92,13 @@ function App() {
       }
     } catch (e) {
       console.error('Failed to load project state from cache', e);
+    } finally {
+      setIsLoaded(true);
     }
   }, []);
 
   useEffect(() => {
+    if (!isLoaded) return;
     try {
       const state = {
         fileId,
@@ -91,6 +109,8 @@ function App() {
         aspectRatio,
         burnSubtitles,
         transforms,
+        settings,
+        activeTab,
         // Don't cache blob URLs (they start with blob:) as they won't work across sessions.
         // We only cache the videoUrl if it's a relative path (like YouTube download or reconstructed)
         videoUrl: videoUrl?.startsWith('blob:') ? (fileId ? `/api/uploads/${fileId}` : null) : videoUrl,
@@ -99,7 +119,7 @@ function App() {
     } catch (e) {
       console.error('Failed to save project state to cache', e);
     }
-  }, [fileId, youtubeUrl, transcript, niche, aiClips, aspectRatio, burnSubtitles, transforms, videoUrl]);
+  }, [fileId, youtubeUrl, transcript, niche, aiClips, aspectRatio, burnSubtitles, transforms, settings, activeTab, videoUrl, isLoaded]);
 
   const handleClearProject = () => {
     localStorage.removeItem('clipper_project_state');
@@ -117,13 +137,13 @@ function App() {
     handleClearProject();
     setFileId(loadedFileId);
     setVideoUrl(`/api/uploads/${loadedFileId}`);
-    setActiveTab('clips');
+    setActiveTab('settings');
     success('Video loaded from history!');
   };
 
   // Sync background video for the blur effect
   useEffect(() => {
-    const bg = bgVideoRef.current;
+    const bg = player.videoRef.current;
     if (!bg) return;
     if (Math.abs(bg.currentTime - player.currentTime) > 0.3) {
       bg.currentTime = player.currentTime;
@@ -181,11 +201,11 @@ function App() {
     setIsTranscribing(true);
     info('Transcribing audio... this may take 1-2 minutes on first run');
     try {
-      const res = await transcribeVideo(fileId);
+      const res = await transcribeVideo(fileId, 'en', settings);
       setTranscript(res);
       success('Transcription done! Detecting niche...');
 
-      const nicheRes = await detectNiche(res.text);
+      const nicheRes = await detectNiche(res.text, settings);
       setNiche(nicheRes);
       success(`Niche detected: ${nicheRes.niche}`);
     } catch (err: any) {
@@ -198,14 +218,14 @@ function App() {
   const handleFetchAiClips = async () => {
     if (!transcript) { error('Please transcribe the video first!'); return; }
     setIsLoadingAiClips(true);
-    setActiveTab('clips'); // Switch to clips tab immediately
     info('AI is scanning for the best clips...');
     try {
       const clips = await getAiClipSuggestions(
         transcript.text,
         transcript.words,
         niche?.niche || 'general',
-        transcript.duration
+        transcript.duration,
+        settings
       );
       if (clips.length === 0) {
         error('AI returned no clips. Check that Ollama is running and try again.');
@@ -247,8 +267,13 @@ function App() {
         burnSubtitles,
         words: transcript?.words?.filter(w => w.start >= s && w.end <= e) || [],
         transforms,
-        addIntroHook,
-        introHookText
+        addIntroHook: addIntroHook !== undefined ? addIntroHook : settings.addIntroHook,
+        introHookText,
+        ttsEngine: settings.ttsEngine,
+        elevenLabsApiKey: settings.elevenLabsApiKey,
+        // Also send api keys to the backend
+        groqApiKey: settings.groqApiKey,
+        openRouterApiKey: settings.openRouterApiKey
       });
       success(`Clip ready: ${title || 'exported'}!`);
       const link = document.createElement('a');
@@ -265,8 +290,73 @@ function App() {
     }
   };
 
+  const handleUploadYoutube = async (clipIdx: number, scheduledTime?: Date) => {
+    if (!fileId) return;
+    const clip = aiClips[clipIdx];
+    const clipKey = `${clip.start}-${clip.end}`;
+    setExportingClipId(clipKey);
+    info('Preparing video for YouTube upload...');
+    
+    try {
+      // 1. Export the clip (generate the file on server)
+      const res = await exportClip({
+        fileId,
+        start: clip.start,
+        end: clip.end,
+        aspectRatio,
+        burnSubtitles,
+        words: transcript?.words?.filter(w => w.start >= clip.start && w.end <= clip.end) || [],
+        transforms,
+        addIntroHook: settings.addIntroHook,
+        introHookText: clip.title,
+        ttsEngine: settings.ttsEngine,
+        elevenLabsApiKey: settings.elevenLabsApiKey,
+        groqApiKey: settings.groqApiKey,
+        openRouterApiKey: settings.openRouterApiKey
+      });
+
+      info('Uploading to YouTube...');
+      // 2. Upload to YouTube using the generated filename
+      const uploadRes = await fetch('/api/youtube-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: res.filename, // send the filename returned by export
+          title: clip.title,
+          description: clip.description_en,
+          tags: clip.tags_en,
+          scheduledTime: scheduledTime?.toISOString()
+        })
+      });
+
+      if (uploadRes.status === 401) {
+        // Needs OAuth login
+        const data = await uploadRes.json();
+        const authRes = await fetch('/api/youtube/auth-url');
+        const { url } = await authRes.json();
+        if (url) {
+          window.location.href = url; // Redirect to Google Login
+          return;
+        }
+        throw new Error(data.error || 'Authentication required');
+      }
+
+      if (!uploadRes.ok) {
+        const data = await uploadRes.json();
+        throw new Error(data.error || 'Failed to upload to YouTube');
+      }
+
+      success(scheduledTime ? `Clip scheduled for ${scheduledTime.toLocaleString()}!` : 'Clip uploaded successfully to YouTube!');
+    } catch (err: any) {
+      error(err.message || 'YouTube upload failed');
+      throw err;
+    } finally {
+      setExportingClipId(null);
+    }
+  };
+
   const handleChat = async (message: string, history: ChatMessage[]): Promise<string> => {
-    return chatWithAI(message, transcript?.text || '', niche?.niche || '', history);
+    return chatWithAI(message, transcript?.text || '', niche?.niche || '', history, settings);
   };
 
   // Current subtitle word at player time
@@ -286,22 +376,23 @@ function App() {
     transforms.scaleCrop ? `scale(${1 + (transforms.scaleCropAmount ?? 5) / 100})` : ''
   ].filter(Boolean).join(' ') || 'none';
 
+  const showHookOverlay = player.currentTime < 3 && settings.addIntroHook;
+
   return (
-    <div className="app-layout">
+    <div className={`app-layout ${activeTab !== 'clips' ? 'layout-full-panel' : ''}`}>
       {/* ── Sidebar ── */}
       <aside className="app-sidebar">
         <div style={{
           fontSize: '1.4rem', fontWeight: 900,
-          background: 'linear-gradient(135deg, #06b6d4, #ec4899)',
-          WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+          color: 'white',
           marginBottom: 8
         }}>C</div>
         <button
           className={`sidebar-icon ${activeTab === 'clips' ? 'active' : ''}`}
           onClick={() => setActiveTab('clips')}
-          title="AI Clips"
+          title="AI Clips & Transcription"
         >
-          <Sparkles size={20} />
+          <Scissors size={20} />
         </button>
         <button
           className={`sidebar-icon ${activeTab === 'chat' ? 'active' : ''}`}
@@ -349,7 +440,8 @@ function App() {
               fontSize: '0.75rem',
               marginRight: '10px',
               background: 'rgba(255,255,255,0.05)',
-              border: '1px solid rgba(255,255,255,0.1)'
+              border: '1px solid rgba(255,255,255,0.1)',
+              color: 'white'
             }}
           >
             <Plus size={14} style={{ marginRight: 4 }} />
@@ -397,7 +489,7 @@ function App() {
                 disabled={!youtubeUrl || isUploading}
                 style={{ padding: '10px 20px', borderRadius: 12 }}
               >
-                {isUploading && !ytProgress ? <Loader2 size={16} className="btn-spinner" /> : 'Download'}
+                {isUploading && !ytProgress ? <Loader2 size={16} className="lucide-spinner" /> : 'Download'}
               </button>
             </div>
 
@@ -407,15 +499,14 @@ function App() {
                 {/* Header row */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Loader2 size={14} className="btn-spinner" style={{ color: '#06b6d4' }} />
+                    <Loader2 size={14} className="lucide-spinner" style={{ color: '#06b6d4' }} />
                     <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>
                       {ytProgress.status || 'Downloading...'}
                     </span>
                   </div>
                   <span style={{
                     fontSize: '1rem', fontWeight: 800,
-                    background: 'linear-gradient(90deg, #06b6d4, #8b5cf6)',
-                    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'
+                    color: 'white'
                   }}>
                     {ytProgress.percent.toFixed(1)}%
                   </span>
@@ -428,12 +519,10 @@ function App() {
                   boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.4)'
                 }}>
                   <div style={{
-                    height: '100%',
-                    width: `${ytProgress.percent}%`,
-                    background: 'linear-gradient(90deg, #06b6d4, #8b5cf6, #ec4899)',
+                    background: 'white',
                     borderRadius: 99,
                     transition: 'width 0.5s cubic-bezier(0.4,0,0.2,1)',
-                    boxShadow: '0 0 14px rgba(6,182,212,0.55), 0 0 30px rgba(139,92,246,0.25)',
+                    boxShadow: '0 0 14px rgba(255,255,255,0.55)',
                     position: 'relative',
                     overflow: 'hidden',
                   }}>
@@ -459,13 +548,13 @@ function App() {
                   </div>
                   <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '8px 4px' }}>
                     <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.35)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: 0.8 }}>Speed</div>
-                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#a78bfa' }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#e2e8f0' }}>
                       {ytProgress.speed || '—'}
                     </div>
                   </div>
                   <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '8px 4px' }}>
                     <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.35)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: 0.8 }}>ETA</div>
-                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#34d399' }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#e2e8f0' }}>
                       {ytProgress.eta && ytProgress.eta !== 'Unknown' ? ytProgress.eta : '—'}
                     </div>
                   </div>
@@ -480,11 +569,11 @@ function App() {
                       <div key={phase} style={{
                         padding: '3px 12px', borderRadius: 99,
                         fontSize: '0.68rem', fontWeight: 600,
-                        background: isActive ? 'rgba(6,182,212,0.2)' : 'rgba(255,255,255,0.04)',
-                        border: `1px solid ${isActive ? 'rgba(6,182,212,0.55)' : 'rgba(255,255,255,0.08)'}`,
-                        color: isActive ? '#06b6d4' : 'rgba(255,255,255,0.28)',
+                        background: isActive ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.04)',
+                        border: `1px solid ${isActive ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.08)'}`,
+                        color: isActive ? '#fff' : 'rgba(255,255,255,0.28)',
                         transition: 'all 0.35s ease',
-                        boxShadow: isActive ? '0 0 10px rgba(6,182,212,0.3)' : 'none',
+                        boxShadow: isActive ? '0 0 10px rgba(255,255,255,0.3)' : 'none',
                       }}>
                         {labels[phase]}
                       </div>
@@ -519,7 +608,7 @@ function App() {
                 {/* Background Blur Video (only for 9:16 blur feature) */}
                 {isBlurBg && (
                   <video
-                    ref={bgVideoRef}
+                    ref={player.videoRef}
                     src={videoUrl ?? undefined}
                     muted
                     playsInline
@@ -564,6 +653,14 @@ function App() {
                       position: 'relative'
                     }}
                   />
+                  {showHookOverlay && (
+                    <>
+                      <div className="hook-gradient-overlay" />
+                      <div className="hook-overlay">
+                        <div className="hook-text">{settings.addIntroHook ? "WAIT FOR IT..." : "WATCH THIS"}</div>
+                      </div>
+                    </>
+                  )}
                   {burnSubtitles && currentSubtitle && (
                     <div className="subtitle-overlay" style={{ zIndex: 2 }}>{currentSubtitle}</div>
                   )}
@@ -571,32 +668,7 @@ function App() {
               </div>
             </div>
 
-            {/* Transcribe Button */}
-            {!transcript && fileId && !isUploading && (
-              <button
-                id="btn-transcribe"
-                className="btn btn-primary"
-                onClick={handleTranscribeAndAnalyze}
-                disabled={isTranscribing}
-                style={{ margin: '0 auto', minWidth: 280 }}
-              >
-                {isTranscribing ? <Loader2 size={16} className="btn-spinner" /> : <Sparkles size={16} />}
-                {isTranscribing ? 'Transcribing & Analyzing...' : 'Transcribe & Analyze with AI'}
-              </button>
-            )}
-
-            {transcript && niche && aiClips.length === 0 && (
-              <button
-                id="btn-get-ai-clips"
-                className="btn btn-primary"
-                onClick={handleFetchAiClips}
-                disabled={isLoadingAiClips}
-                style={{ margin: '0 auto', minWidth: 280 }}
-              >
-                {isLoadingAiClips ? <Loader2 size={16} className="btn-spinner" /> : <Sparkles size={16} />}
-                {isLoadingAiClips ? 'Finding best clips...' : 'Find Best Clips with AI'}
-              </button>
-            )}
+            {/* Buttons and AI Clips moved to app-panel clips tab */}
 
             {/* Timeline */}
             <div style={{
@@ -615,12 +687,12 @@ function App() {
                   id="btn-play-pause"
                   onClick={player.togglePlay}
                   style={{
-                    background: 'linear-gradient(135deg, #06b6d4, #8b5cf6)',
+                    background: 'white',
                     border: 'none',
                     borderRadius: '50%',
                     width: 38, height: 38,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: 'white', cursor: 'pointer'
+                    color: 'black', cursor: 'pointer'
                   }}
                 >
                   {player.playing ? <Pause size={16} /> : <Play size={16} />}
@@ -632,13 +704,13 @@ function App() {
 
               {/* Progress bar */}
               <div style={{ position: 'relative', height: 48, borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-                <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${(player.currentTime / (player.duration || 1)) * 100}%`, background: 'linear-gradient(90deg, transparent, rgba(6,182,212,0.5))', borderRight: '2px solid #06b6d4' }} />
+                <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${(player.currentTime / (player.duration || 1)) * 100}%`, background: 'rgba(255,255,255,0.2)', borderRight: '2px solid #fff' }} />
                 <div style={{
                   position: 'absolute', top: 0, height: '100%',
                   left: `${(player.clipRange.start / (player.duration || 1)) * 100}%`,
                   width: `${((player.clipRange.end - player.clipRange.start) / (player.duration || 1)) * 100}%`,
-                  background: 'rgba(236,72,153,0.15)',
-                  borderLeft: '3px solid #ec4899', borderRight: '3px solid #ec4899'
+                  background: 'rgba(255,255,255,0.1)',
+                  borderLeft: '3px solid #fff', borderRight: '3px solid #fff'
                 }} />
                 <input
                   type="range" min={0} max={player.duration || 100} step={0.1}
@@ -660,24 +732,71 @@ function App() {
                 </div>
               </div>
             </div>
+            {/* Timeline ends here */}
           </div>
         )}
       </main>
 
       {/* ── Right Panel ── */}
-      <aside className="app-panel">
+      <aside className={`app-panel ${activeTab === 'clips' ? 'panel-full-width' : ''}`}>
 
-        {/* AI Clips Tab */}
+        {/* Clips Tab */}
         {activeTab === 'clips' && (
-          <AiClipsPanel
-            clips={aiClips}
-            isLoading={isLoadingAiClips}
-            hasTranscript={!!transcript}
-            onFetchSuggestions={handleFetchAiClips}
-            onApplyClip={handleApplyClip}
-            onExportClip={(s, e, t, h, ht) => handleExportClip(s, e, t, h, ht)}
-            exportingId={exportingClipId}
-          />
+          <div className="panel-section">
+            {!fileId && !isUploading && (
+              <div style={{ textAlign: 'center', opacity: 0.5, padding: '40px 0' }}>
+                Please upload a video first to use AI features.
+              </div>
+            )}
+
+            {/* Transcribe Button */}
+            {!transcript && fileId && !isUploading && (
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <button
+                  id="btn-transcribe"
+                  className="btn btn-primary"
+                  onClick={handleTranscribeAndAnalyze}
+                  disabled={isTranscribing}
+                  style={{ margin: '0 auto', minWidth: 280 }}
+                >
+                  {isTranscribing ? <Loader2 size={16} className="lucide-spinner" /> : <Sparkles size={16} />}
+                  {isTranscribing ? 'Transcribing & Analyzing...' : 'Transcribe & Analyze with AI'}
+                </button>
+              </div>
+            )}
+
+            {/* Find Best Clips Button */}
+            {transcript && aiClips.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <button
+                  id="btn-get-ai-clips"
+                  className="btn btn-primary"
+                  onClick={handleFetchAiClips}
+                  disabled={isLoadingAiClips}
+                  style={{ margin: '0 auto', minWidth: 280 }}
+                >
+                  {isLoadingAiClips ? <Loader2 size={16} className="lucide-spinner" /> : <Sparkles size={16} />}
+                  {isLoadingAiClips ? 'Finding best clips...' : 'Find Best Clips with AI'}
+                </button>
+              </div>
+            )}
+
+            {/* AI Clips Section */}
+            {transcript && (aiClips.length > 0 || isLoadingAiClips) && (
+              <div style={{ marginTop: 10 }}>
+                <AiClipsPanel
+                  clips={aiClips}
+                  isLoading={isLoadingAiClips}
+                  hasTranscript={!!transcript}
+                  onFetchSuggestions={handleFetchAiClips}
+                  onApplyClip={handleApplyClip}
+                  onExportClip={(s, e, t, h, ht) => handleExportClip(s, e, t, h ?? settings.addIntroHook, ht)}
+                  exportingId={exportingClipId}
+                  onUploadYoutube={handleUploadYoutube}
+                />
+              </div>
+            )}
+          </div>
         )}
 
         {/* AI Chat Tab */}
@@ -714,7 +833,7 @@ function App() {
             {niche && (
               <div className="panel-section">
                 <div className="panel-section-title"><Sparkles size={14} /> Niche Analysis</div>
-                <div style={{ background: 'linear-gradient(135deg, #ec4899, #8b5cf6)', padding: '8px 16px', borderRadius: 99, fontWeight: 800, display: 'inline-block', marginBottom: 8 }}>{niche.niche || 'General'}</div>
+                <div style={{ background: '#333', padding: '8px 16px', borderRadius: 99, fontWeight: 800, display: 'inline-block', marginBottom: 8, color: 'white' }}>{niche.niche || 'General'}</div>
                 <p style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.55)', lineHeight: 1.5, marginBottom: 8 }}>{niche.summary || 'Video content analysis'}</p>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {(niche.keywords || []).map(k => (
@@ -724,41 +843,27 @@ function App() {
               </div>
             )}
 
-            {/* Export Settings */}
+            {/* Settings Component */}
+            <SettingsPanel
+              settings={settings}
+              setSettings={setSettings}
+              aspectRatio={aspectRatio}
+              setAspectRatio={setAspectRatio}
+              burnSubtitles={burnSubtitles}
+              setBurnSubtitles={setBurnSubtitles}
+              hasTranscript={!!transcript}
+              transforms={transforms}
+              setTransforms={setTransforms}
+            />
+
             <div className="panel-section">
-              <div className="panel-section-title"><Scissors size={14} /> Output Settings</div>
-
-              <label style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.45)', marginBottom: 10, display: 'block', textTransform: 'uppercase', letterSpacing: 1 }}>Aspect Ratio</label>
-              <div className="aspect-grid" style={{ marginBottom: 20 }}>
-                {(['9:16', '16:9', '1:1'] as const).map(r => (
-                  <div key={r} className={`aspect-btn ${aspectRatio === r ? 'selected' : ''}`} onClick={() => setAspectRatio(r)}>
-                    <Layout size={14} />
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700 }}>{r}</span>
-                  </div>
-                ))}
-              </div>
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 20 }}>
-                <input
-                  type="checkbox"
-                  checked={burnSubtitles}
-                  onChange={e => setBurnSubtitles(e.target.checked)}
-                  disabled={!transcript}
-                  style={{ width: 16, height: 16, accentColor: '#06b6d4' }}
-                />
-                <div>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>Burn Subtitles</div>
-                  <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)' }}>Auto-generated from transcript</div>
-                </div>
-              </label>
-
               <button
                 id="btn-export-manual"
                 className="btn btn-primary btn-full"
                 onClick={() => handleExportClip()}
                 disabled={!fileId || isExporting || isUploading}
               >
-                {isExporting ? <Loader2 size={16} className="btn-spinner" /> : <Download size={16} />}
+                {isExporting ? <Loader2 size={16} className="lucide-spinner" /> : <Download size={16} />}
                 Export Current Clip
               </button>
 

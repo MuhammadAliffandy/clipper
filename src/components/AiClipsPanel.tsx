@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Sparkles, Play, Download, Loader2, ChevronRight, Star } from 'lucide-react';
+import { Sparkles, Play, Download, Loader2, ChevronRight, Star, MonitorPlay } from 'lucide-react';
 import { type AiClipSuggestion } from '../lib/api';
+import { YoutubeUploadModal } from './YoutubeUploadModal';
 
 interface AiClipsPanelProps {
   clips: AiClipSuggestion[];
@@ -10,6 +11,7 @@ interface AiClipsPanelProps {
   onApplyClip: (start: number, end: number) => void;
   onExportClip: (start: number, end: number, title: string, addIntroHook?: boolean, introHookText?: string) => void;
   exportingId: string | null;
+  onUploadYoutube: (clipIdx: number, scheduledTime?: Date) => Promise<void>;
 }
 
 function formatTime(s: number) {
@@ -42,9 +44,10 @@ export const AiClipsPanel: React.FC<AiClipsPanelProps> = ({
   onFetchSuggestions,
   onApplyClip,
   onExportClip,
-  exportingId
+  exportingId,
+  onUploadYoutube
 }) => {
-  const [addIntroHook, setAddIntroHook] = useState(false);
+  const [uploadClipIdx, setUploadClipIdx] = useState<number | null>(null);
 
   return (
     <div className="panel-section">
@@ -61,7 +64,7 @@ export const AiClipsPanel: React.FC<AiClipsPanelProps> = ({
         // Loading state — show spinner + animated skeleton cards
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', color: 'rgba(255,255,255,0.6)', fontSize: '0.85rem' }}>
-            <Loader2 size={18} className="btn-spinner" />
+            <Loader2 size={18} className="lucide-spinner" />
             AI is finding the best clips...
           </div>
           {[1,2,3].map(i => (
@@ -84,49 +87,22 @@ export const AiClipsPanel: React.FC<AiClipsPanelProps> = ({
           Find Best Clips with AI
         </button>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* TTS Hook Toggle */}
-          <div style={{
-            background: 'rgba(245,158,11,0.1)',
-            border: '1px solid rgba(245,158,11,0.3)',
-            borderRadius: 12,
-            padding: '12px 14px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            cursor: 'pointer'
-          }} onClick={() => setAddIntroHook(!addIntroHook)}>
-            <div style={{
-              width: 36, height: 20, borderRadius: 10,
-              background: addIntroHook ? '#f59e0b' : 'rgba(255,255,255,0.1)',
-              position: 'relative',
-              transition: 'all 0.2s',
-              flexShrink: 0
-            }}>
-              <div style={{
-                position: 'absolute', top: 2, left: addIntroHook ? 18 : 2,
-                width: 16, height: 16, borderRadius: '50%', background: 'white',
-                transition: 'all 0.2s'
-              }} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#fbbf24' }}>Add AI Voice Hook Intro</div>
-              <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>
-                Prepend a 3-second hook with TTS audio and yellow text.
-              </div>
-            </div>
-          </div>
+        <div className="clips-grid">
 
           {clips.map((clip, i) => (
             <div
               key={i}
               className="ai-clip-card"
               style={{
+                display: 'flex',
+                flexDirection: 'column',
                 background: 'rgba(0,0,0,0.3)',
                 border: '1px solid rgba(255,255,255,0.1)',
                 borderRadius: 14,
-                padding: 14,
+                padding: 16,
                 transition: 'all 0.2s',
+                minWidth: 320,
+                flexShrink: 0,
               }}
             >
               {/* Header */}
@@ -140,9 +116,22 @@ export const AiClipsPanel: React.FC<AiClipsPanelProps> = ({
                   paddingRight: 8
                 }}>
                   {clip.title}
+                  <button
+                    onClick={() => {
+                      const text = `${clip.title}\n\n${clip.description_en || ''}\n\n${(clip.tags_en || []).map(t => '#' + t.replace(/^#/, '')).join(' ')}`;
+                      navigator.clipboard.writeText(text);
+                    }}
+                    style={{
+                      background: 'none', border: 'none', color: '#a0a0a0', cursor: 'pointer', marginLeft: 8, fontSize: '0.8rem'
+                    }}
+                    title="Copy to clipboard"
+                  >
+                    📋
+                  </button>
                 </span>
                 <span style={{
-                  background: 'linear-gradient(135deg, #06b6d4, #8b5cf6)',
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  color: 'white',
                   padding: '2px 8px',
                   borderRadius: 99,
                   fontSize: '0.7rem',
@@ -156,62 +145,33 @@ export const AiClipsPanel: React.FC<AiClipsPanelProps> = ({
               {/* Score */}
               <ScoreBar score={clip.score} />
 
-              {/* Hook preview */}
-              <p style={{
-                fontSize: '0.76rem',
-                color: 'rgba(255,255,255,0.55)',
-                marginTop: 8,
-                lineHeight: 1.5,
-                fontStyle: 'italic'
+              {/* Description & Tags */}
+              <div style={{
+                marginTop: 12,
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8
               }}>
-                "{clip.hook}"
-              </p>
-
-              {/* Reason */}
-              <p style={{
-                fontSize: '0.75rem',
-                color: 'rgba(255,255,255,0.4)',
-                marginTop: 4,
-                lineHeight: 1.4
-              }}>
-                {clip.reason}
-              </p>
-
-              {/* English Recommendation */}
-              {(clip.description_en || (clip.tags_en && clip.tags_en.length > 0)) && (
-                <div style={{
-                  marginTop: 10,
-                  padding: 10,
-                  background: 'rgba(255,255,255,0.03)',
-                  borderRadius: 10,
-                  border: '1px solid rgba(255,255,255,0.05)'
-                }}>
-                  <div style={{ fontSize: '0.7rem', fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                    Recommendation (EN)
+                {clip.description_en && (
+                  <p style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)', lineHeight: 1.5 }}>
+                    {clip.description_en}
+                  </p>
+                )}
+                {clip.tags_en && clip.tags_en.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {clip.tags_en.map((tag, idx) => (
+                      <span key={idx} style={{
+                        color: '#a0a0a0',
+                        fontSize: '0.75rem',
+                        fontWeight: 600
+                      }}>
+                        #{tag.replace(/^#/, '')}
+                      </span>
+                    ))}
                   </div>
-                  {clip.description_en && (
-                    <p style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.7)', lineHeight: 1.4, marginBottom: 8 }}>
-                      {clip.description_en}
-                    </p>
-                  )}
-                  {clip.tags_en && clip.tags_en.length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {clip.tags_en.map((tag, idx) => (
-                        <span key={idx} style={{
-                          background: 'rgba(6,182,212,0.15)',
-                          color: '#06b6d4',
-                          padding: '2px 8px',
-                          borderRadius: 99,
-                          fontSize: '0.65rem',
-                          fontWeight: 600
-                        }}>
-                          #{tag.replace(/^#/, '')}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Actions */}
               <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
@@ -239,27 +199,51 @@ export const AiClipsPanel: React.FC<AiClipsPanelProps> = ({
                     fontSize: '0.78rem',
                     borderRadius: 10,
                   }}
-                  onClick={() => onExportClip(clip.start, clip.end, clip.title, addIntroHook, clip.title)}
+                  onClick={() => onExportClip(clip.start, clip.end, clip.title, undefined, clip.title)}
                   disabled={exportingId === `${clip.start}-${clip.end}`}
                   id={`btn-export-clip-${i}`}
                 >
                   {exportingId === `${clip.start}-${clip.end}`
-                    ? <Loader2 size={12} className="btn-spinner" />
+                    ? <Loader2 size={12} className="lucide-spinner" />
                     : <Download size={12} />}
-                  Export
+                  {exportingId === `${clip.start}-${clip.end}` ? 'Exporting...' : 'Export'}
+                </button>
+                <button
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    background: 'rgba(255, 0, 0, 0.1)',
+                    color: '#ff4444',
+                    padding: '8px',
+                    fontSize: '0.78rem',
+                    borderRadius: 10,
+                    border: '1px solid rgba(255, 0, 0, 0.2)',
+                    opacity: exportingId === `${clip.start}-${clip.end}` ? 0.5 : 1
+                  }}
+                  onClick={() => setUploadClipIdx(i)}
+                  disabled={exportingId === `${clip.start}-${clip.end}`}
+                >
+                  {exportingId === `${clip.start}-${clip.end}` ? (
+                    <Loader2 size={12} className="lucide-spinner" />
+                  ) : (
+                    <MonitorPlay size={12} />
+                  )} 
+                  {exportingId === `${clip.start}-${clip.end}` ? 'Uploading...' : 'YouTube'}
                 </button>
               </div>
             </div>
           ))}
 
           <button
+            className="btn"
             style={{
+              marginTop: 16,
               background: 'transparent',
               border: '1px dashed rgba(255,255,255,0.2)',
               borderRadius: 10,
               color: 'rgba(255,255,255,0.4)',
-              padding: '8px',
-              fontSize: '0.78rem',
+              padding: '12px',
+              fontSize: '0.85rem',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -272,6 +256,20 @@ export const AiClipsPanel: React.FC<AiClipsPanelProps> = ({
             <ChevronRight size={14} /> Regenerate Suggestions
           </button>
         </div>
+      )}
+
+      {uploadClipIdx !== null && (
+        <YoutubeUploadModal
+          clipTitle={clips[uploadClipIdx].title}
+          clipDescription={clips[uploadClipIdx].description_en || ''}
+          clipTags={clips[uploadClipIdx].tags_en || []}
+          onClose={() => setUploadClipIdx(null)}
+          onUpload={async (scheduledTime) => {
+            if (uploadClipIdx !== null) {
+              await onUploadYoutube(uploadClipIdx, scheduledTime);
+            }
+          }}
+        />
       )}
     </div>
   );
