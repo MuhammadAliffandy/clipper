@@ -30,7 +30,7 @@ env.allowLocalModels = false;
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3005;
 
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gpt-4o-mini';
 
@@ -280,6 +280,7 @@ app.post('/api/youtube', async (req, res) => {
 // 2b. YouTube Download with real-time SSE progress
 app.get('/api/youtube-stream', async (req, res) => {
   const url = req.query.url as string;
+  console.log('HIT YOUTUBE STREAM:', url);
   if (!url) { res.status(400).json({ error: 'Missing url query param' }); return; }
 
   // SSE headers
@@ -304,8 +305,8 @@ app.get('/api/youtube-stream', async (req, res) => {
   sendEvt('status', { message: 'Connecting to YouTube...' });
 
   try {
-    // youtubedl() returns an execa child process (PromiseLike + ChildProcess)
-    proc = youtubedl(url, {
+    // youtubedl.exec() returns an execa child process which has stdout/stderr
+    proc = youtubedl.exec(url, {
       output: outputPath,
       format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
       mergeOutputFormat: 'mp4',
@@ -336,6 +337,7 @@ app.get('/api/youtube-stream', async (req, res) => {
         /\[download\]\s+([\d.]+)%\s+of\s+~?\s*([a-zA-Z0-9.]+)\s+at\s+~?\s*([a-zA-Z0-9.\/]+)\s+ETA\s+([\d:]+)/
       );
       if (m) {
+        // console.log('Parsed Progress:', m[1], m[2], m[3], m[4]);
         const percent   = parseFloat(m[1]);
         const totalStr  = m[2];          // e.g. "89.36MiB"
         const speedStr  = m[3];          // e.g. "2.13MiB/s"
@@ -350,19 +352,33 @@ app.get('/api/youtube-stream', async (req, res) => {
           speed: speedStr,
           eta: etaStr,
         });
+      } else if (line.includes('[download]')) {
+        console.log('UNMATCHED DL LINE:', JSON.stringify(line));
       }
     };
 
-    // yt-dlp writes progress to stderr (uses \r to overwrite the same line)
-    proc.stdout?.on('data', (d: Buffer) => d.toString().split(/[\r\n]/).forEach(parseLine));
-    proc.stderr?.on('data', (d: Buffer) => d.toString().split(/[\r\n]/).forEach(parseLine));
+    let buffer = '';
+
+    const handleChunk = (chunk: string) => {
+      buffer += chunk;
+      let i;
+      while ((i = buffer.search(/[\r\n]/)) > -1) {
+        const line = buffer.slice(0, i);
+        buffer = buffer.slice(i + 1);
+        parseLine(line);
+      }
+    };
+
+    proc.stdout?.on('data', (d: Buffer) => handleChunk(d.toString()));
+    proc.stderr?.on('data', (d: Buffer) => handleChunk(d.toString()));
 
     await proc;
+    if (buffer) parseLine(buffer);
 
     sendEvt('done', { fileId });
   } catch (err: any) {
     console.error('YouTube SSE Download Error:', err.message);
-    sendEvt('error', { message: err.message || 'Failed to download YouTube video' });
+    sendEvt('server_error', { message: err.message || 'Failed to download YouTube video' });
   } finally {
     res.end();
   }

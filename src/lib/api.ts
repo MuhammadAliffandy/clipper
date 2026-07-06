@@ -119,12 +119,17 @@ export function downloadYouTubeVideoWithProgress(
       catch { reject(new Error('Unexpected response from server')); }
     });
 
-    src.addEventListener('error', (e: Event) => {
+    src.addEventListener('server_error', (e: Event) => {
       src.close();
       const msg = (e as MessageEvent).data
         ? (() => { try { return JSON.parse((e as MessageEvent).data).message; } catch { return 'Download failed'; } })()
-        : 'Connection to server lost';
+        : 'Download failed on server';
       reject(new Error(msg));
+    });
+
+    src.addEventListener('error', () => {
+      src.close();
+      reject(new Error('Connection to server lost or video unavailable'));
     });
   });
 }

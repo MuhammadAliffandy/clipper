@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MonitorPlay, Calendar, X, UploadCloud, Loader2 } from 'lucide-react';
+import { MonitorPlay, Calendar, X, UploadCloud } from 'lucide-react';
 
 interface YoutubeUploadModalProps {
   clipTitle: string;

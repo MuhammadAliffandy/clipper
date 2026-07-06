@@ -32,6 +32,7 @@ function App() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [loadedYoutubeUrl, setLoadedYoutubeUrl] = useState<string | null>(null);
   const [ytProgress, setYtProgress] = useState<(YTProgressData & { status: string }) | null>(null);
 
   // Processing state
@@ -75,6 +76,7 @@ function App() {
         const data = JSON.parse(cached);
         if (data.fileId) setFileId(data.fileId);
         if (data.youtubeUrl) setYoutubeUrl(data.youtubeUrl);
+        if (data.loadedYoutubeUrl) setLoadedYoutubeUrl(data.loadedYoutubeUrl);
         if (data.transcript) setTranscript(data.transcript);
         if (data.niche) setNiche(data.niche);
         if (data.aiClips) setAiClips(data.aiClips);
@@ -103,6 +105,7 @@ function App() {
       const state = {
         fileId,
         youtubeUrl,
+        loadedYoutubeUrl,
         transcript,
         niche,
         aiClips,
@@ -119,7 +122,7 @@ function App() {
     } catch (e) {
       console.error('Failed to save project state to cache', e);
     }
-  }, [fileId, youtubeUrl, transcript, niche, aiClips, aspectRatio, burnSubtitles, transforms, settings, activeTab, videoUrl, isLoaded]);
+  }, [fileId, youtubeUrl, loadedYoutubeUrl, transcript, niche, aiClips, aspectRatio, burnSubtitles, transforms, settings, activeTab, videoUrl, isLoaded]);
 
   const handleClearProject = () => {
     localStorage.removeItem('clipper_project_state');
@@ -127,6 +130,7 @@ function App() {
     setFileId(null);
     setVideoUrl(null);
     setYoutubeUrl('');
+    setLoadedYoutubeUrl(null);
     setTranscript(null);
     setNiche(null);
     setAiClips([]);
@@ -164,6 +168,7 @@ function App() {
       info('Uploading video...');
       const id = await uploadVideo(selected, setUploadProgress);
       setFileId(id);
+      setLoadedYoutubeUrl(null);
       success('Upload complete! Click "Transcribe & Analyze" to start AI analysis.');
     } catch (err: any) {
       error(err.message || 'Upload failed');
@@ -186,6 +191,7 @@ function App() {
       );
       setFileId(id);
       setVideoUrl(`/api/uploads/${id}`);
+      setLoadedYoutubeUrl(youtubeUrl);
       setYoutubeUrl('');
       success('YouTube video downloaded! Click "Transcribe & Analyze" to start.');
     } catch (err: any) {
@@ -299,11 +305,12 @@ function App() {
     
     try {
       // 1. Export the clip (generate the file on server)
+      // Force 9:16 aspect ratio for YouTube Shorts
       const res = await exportClip({
         fileId,
         start: clip.start,
         end: clip.end,
-        aspectRatio,
+        aspectRatio: '9:16',
         burnSubtitles,
         words: transcript?.words?.filter(w => w.start >= clip.start && w.end <= clip.end) || [],
         transforms,
@@ -323,8 +330,10 @@ function App() {
         body: JSON.stringify({
           filename: res.filename, // send the filename returned by export
           title: clip.title,
-          description: clip.description_en,
-          tags: clip.tags_en,
+          description: loadedYoutubeUrl 
+            ? `${clip.description_en}\n\n${niche?.keywords?.map(k => '#' + k.replace(/\\s+/g, '')).join(' ') || ''}\n\nOriginal Video: ${loadedYoutubeUrl}`
+            : `${clip.description_en}\n\n${niche?.keywords?.map(k => '#' + k.replace(/\\s+/g, '')).join(' ') || ''}`,
+          tags: [...(clip.tags_en || []), ...(niche?.keywords || [])],
           scheduledTime: scheduledTime?.toISOString()
         })
       });
