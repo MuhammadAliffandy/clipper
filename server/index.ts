@@ -30,7 +30,7 @@ env.allowLocalModels = false;
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const app = express();
-const PORT = process.env.PORT || 3005;
+const PORT = process.env.PORT || 3001;
 
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gpt-4o-mini';
 
@@ -1240,6 +1240,9 @@ app.post('/api/youtube-upload', async (req, res) => {
     res.json({ success: true, message: scheduledTime ? 'Scheduled successfully' : 'Uploaded successfully', videoId: response.data.id });
   } catch (err: any) {
     console.error('[YouTube] Upload Error:', err.message);
+    if (err.message && err.message.includes('invalid_grant')) {
+      return res.status(401).json({ error: 'Session expired. Re-authentication required.' });
+    }
     res.status(500).json({ error: 'YouTube API Error: ' + err.message });
   }
 });

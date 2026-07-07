@@ -10,7 +10,7 @@ export default defineConfig({
       // through the text/event-stream response without buffering when the
       // server calls res.flushHeaders() and sets Cache-Control: no-cache.
       '/api': {
-        target: 'http://localhost:3005',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         configure: (proxy) => {
           proxy.on('proxyRes', (proxyRes) => {

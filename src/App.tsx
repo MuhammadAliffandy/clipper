@@ -305,12 +305,11 @@ function App() {
     
     try {
       // 1. Export the clip (generate the file on server)
-      // Force 9:16 aspect ratio for YouTube Shorts
       const res = await exportClip({
         fileId,
         start: clip.start,
         end: clip.end,
-        aspectRatio: '9:16',
+        aspectRatio, // Use the user's selected aspect ratio
         burnSubtitles,
         words: transcript?.words?.filter(w => w.start >= clip.start && w.end <= clip.end) || [],
         transforms,
@@ -604,7 +603,7 @@ function App() {
                 position: 'relative',
                 height: '100%',
                 maxWidth: '100%',
-                aspectRatio: '9/16', // Always stand position (vertical phone layout)
+                aspectRatio: aspectRatio === '9:16' ? '9/16' : (aspectRatio === '1:1' ? '1/1' : '16/9'),
                 background: '#0a0a0a', // Black background for the phone frame
                 borderRadius: 16,
                 overflow: 'hidden',
